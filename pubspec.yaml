@@ -1,0 +1,65 @@
+name: snapcheck
+description: "A new Flutter project."
+publish_to: 'none'
+version: 0.1.0
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'  # Updated SDK version range for broader compatibility
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.2
+  opencv_dart: ^1.0.2
+  image_picker: ^1.0.4  # Updated to latest compatible version
+  image: ^4.2.0
+  file_picker: ^8.1.7
+  path_provider: ^2.1.4
+  excel: ^3.0.0
+  pdf: ^3.11.1
+  printing: ^5.13.2
+  shared_preferences: ^2.2.2
+  flutter_pdfview: ^1.2.3
+  intl: ^0.18.1
+  google_mlkit_text_recognition: ^0.13.1
+  firebase_core: ^3.6.0
+  firebase_database: ^11.1.4
+  firebase_auth: ^5.3.1
+  firebase_storage: ^12.3.3
+  cloud_firestore: ^5.4.4
+  async: ^2.11.0  # Updated to latest
+  url_launcher: ^6.2.2
+  shimmer: ^3.0.0
+  dio: ^5.4.0
+  syncfusion_flutter_xlsio: ^20.4.0
+  share_plus: ^10.0.3
+  open_file: ^3.3.2
+  flutter_file_saver: ^0.6.2  
+  image_cropper: ^5.0.1
+  flutter_share: ^2.0.0
+  permission_handler: ^11.1.0  # Updated to latest
+  connectivity_plus: ^5.0.2
+  
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.13.1  # Updated to latest compatible version
+
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/images/powit.png"
+  adaptive_icon_background: "#ffffff"
+  adaptive_icon_foreground: "assets/images/powit.png"
+
+flutter:
+  assets:
+    - assets/images/logowhite.png
+    - assets/images/name.png
+    - assets/images/logomar.png
+    - assets/images/Format.xlsx
+    - assets/images/powit.png  # Added to ensure icon is included
+
+  uses-material-design: true

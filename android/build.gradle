@@ -1,0 +1,31 @@
+buildscript {
+    ext.kotlin_version = '1.8.22' // Updated Kotlin version for compatibility
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies { 
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version" // Compatible Kotlin Gradle plugin
+        classpath 'com.android.tools.build:gradle:8.1.0' // AGP version for compileSdk 35 compatibility
+        classpath 'com.google.gms:google-services:4.3.15' // Firebase plugin
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = "../build"
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

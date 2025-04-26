@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "683375283779",
+    "project_id": "snap-f830f",
+    "storage_bucket": "snap-f830f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:683375283779:android:5bf0751cffd04825fa4ef6",
+        "android_client_info": {
+          "package_name": "com.example.snapcheck"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB6ZFciK5LiH-9NFuyJNwvTHV2Ax2bcZCE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

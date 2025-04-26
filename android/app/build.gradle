@@ -1,0 +1,46 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    id "dev.flutter.flutter-gradle-plugin"
+    id 'com.google.gms.google-services'
+}
+
+android {
+    namespace = "com.example.snapcheck"
+        compileSdk = 34 // Downgrade to 34 if SDK 35 is unavailable
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_1_8
+    }
+
+    defaultConfig {
+        applicationId = "com.example.snapcheck"
+        minSdk = 23  // Minimum SDK version
+        targetSdk = 34 // Downgrade to 34 if SDK 35 is unavailable
+        versionCode = 1
+        versionName = "1.0"
+    }
+
+    buildTypes {
+        release {
+            signingConfig = signingConfigs.debug  // Use the debug signing config for now
+        }
+    }
+
+    // Resolve the conflict by picking the first instance of the 'libc++_shared.so' file
+    packagingOptions {
+        pickFirst 'lib/arm64-v8a/libc++_shared.so'  // Pick first from arm64-v8a
+        pickFirst 'lib/x86_64/libc++_shared.so'     // Optional, in case the conflict happens on x86_64 too
+    }
+}
+
+flutter {
+    source = "../.."
+}
