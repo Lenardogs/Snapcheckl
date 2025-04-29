@@ -118,31 +118,64 @@ class _ExamDetailPageState extends State<ExamDetailPage> {
           onStatus('No text found in ${files[i].name}');
           continue;
         }
-        // Attempt to extract the student name (assume first non-empty line)
+        // Attempt to extract the student name (improved for OCR errors)
         List<String> lines = ocrText.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
-        String? extractedName = lines.isNotEmpty ? lines[0] : null;
+        String? extractedName;
+        RegExp nameLike = RegExp(r'^(name|nime|nane|nme|nime)[\s:]*', caseSensitive: false);
+        for (var line in lines) {
+          if (nameLike.hasMatch(line)) {
+            // Remove the prefix and trim
+            extractedName = line.replaceFirst(nameLike, '').trim();
+            break;
+          }
+        }
+        // Fallback: use first line if no name prefix found
+        int nameLineIndex = 0;
+        if (extractedName == null) {
+          extractedName = lines.isNotEmpty ? lines[0] : null;
+          nameLineIndex = 0;
+        } else {
+          // Find the line index where the name was detected
+          nameLineIndex = lines.indexWhere((l) => _normalizeName(l).contains(_normalizeName(extractedName!)));
+          if (nameLineIndex == -1) nameLineIndex = 0;
+        }
         if (extractedName == null || extractedName.length < 3) {
           onStatus('No valid name found in ${files[i].name}');
           continue;
         }
-        // Try to match extracted name to a student
+        // Normalize extracted name for comparison
+        // Only declare matchedStudent ONCE
+        String normExtracted = _normalizeName(extractedName);
         Map<String, String>? matchedStudent;
-        double highestScore = 0.0;
-        for (var student in _students) {
-          String fullName = ((student['First Name'] ?? '') + ' ' + (student['Last Name'] ?? '')).toLowerCase().trim();
-          double score = _nameSimilarity(fullName, extractedName.toLowerCase());
-          if (score > highestScore) {
-            highestScore = score;
+        int bestDistance = 999;
+        int matchedIndex = -1;
+        
+        for (int idx = 0; idx < _students.length; idx++) {
+          var student = _students[idx];
+          String first = (student['First Name'] ?? '').trim();
+          String last = (student['Last Name'] ?? '').trim();
+          String fullName = _normalizeName('$first $last');
+          int dist = levenshtein(normExtracted, fullName);
+          print('Levenshtein: ${student['First Name']} ${student['Last Name']} -> $dist');
+          if (dist < bestDistance) {
+            bestDistance = dist;
             matchedStudent = student;
+            matchedIndex = idx;
           }
         }
-        // Use a threshold for similarity
-        if (matchedStudent != null && highestScore > 0.6) {
+        print('Extracted: $extractedName | Normalized: $normExtracted | Best match: ${matchedStudent?['First Name']} ${matchedStudent?['Last Name']} | Distance: $bestDistance');
+        if (matchedStudent != null) {
+          // Always proceed with grading for the closest match, even if the distance is large
+          print('[BULK UPLOAD] Matched student: ${matchedStudent['First Name']} ${matchedStudent['Last Name']} | ID: ${matchedStudent['Student ID']} | Index: $matchedIndex');
           onStatus('Matched: $extractedName → ${matchedStudent['First Name']} ${matchedStudent['Last Name']}');
-          // Remove the name line for answer extraction
-          String answerText = lines.skip(1).join('\n');
-          await _processExtractedText(matchedStudent, answerText);
-          onStatus('Graded: ${matchedStudent['First Name']} ${matchedStudent['Last Name']}');
+          // Remove the name line for answer extraction (use correct index)
+          String answerText = lines.skip(nameLineIndex + 1).join('\n');
+          // Always use the object from _students to ensure correct grading
+          if (matchedIndex != -1) {
+            await _processExtractedText(_students[matchedIndex], answerText);
+          } else {
+            await _processExtractedText(matchedStudent, answerText);
+          }
         } else {
           onStatus('No matching student for "$extractedName" in ${files[i].name}');
         }
@@ -166,6 +199,34 @@ class _ExamDetailPageState extends State<ExamDetailPage> {
     final union = aSet.union(bSet).length;
     return union == 0 ? 0.0 : intersection / union;
   }
+int levenshtein(String s, String t) {
+  if (s == t) return 0;
+  if (s.isEmpty) return t.length;
+  if (t.isEmpty) return s.length;
+  List<List<int>> d = List.generate(s.length + 1, (_) => List.filled(t.length + 1, 0));
+  for (int i = 0; i <= s.length; i++) d[i][0] = i;
+  for (int j = 0; j <= t.length; j++) d[0][j] = j;
+  for (int i = 1; i <= s.length; i++) {
+    for (int j = 1; j <= t.length; j++) {
+      int cost = s[i - 1] == t[j - 1] ? 0 : 1;
+      d[i][j] = [
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + cost
+      ].reduce((a, b) => a < b ? a : b);
+    }
+  }
+  return d[s.length][t.length];
+}
+  // Normalize name: remove punctuation, convert to uppercase, collapse spaces
+  String _normalizeName(String name) {
+    return name
+        .replaceAll(RegExp(r'[^a-zA-Z ]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim()
+        .toUpperCase();
+  }
+
 
   File? _croppedImage; // Holds the currently cropped image, if any
   List<Map<String, String>> _students = [];
@@ -372,32 +433,29 @@ void _generateDynamicAnswerKey() {
 
 // This version properly reads the Firestore maps and initializes the answer key correctly.
 // Let me know if you want any adjustments! 🚀
-
   Future<void> _processExtractedText(Map<String, String> student, String extractedText) async {
   // Split the extracted text into lines
   List<String> lines = extractedText.split('\n');
 
-  // Initialize lists to hold answers from left and right columns
-  List<String> leftColumn = [];
-  List<String> rightColumn = [];
-
-  // Process each line to extract answers
+  // Extract answers using question-number format (e.g., '1. Answer')
+  RegExp answerPattern = RegExp(r'^(\d+)\.\s*(.*)');
+  Map<int, String> answerMap = {};
   for (String line in lines) {
-    // Split the line into columns based on large spaces
-    List<String> columns =
-        line.split(RegExp(r'\s{2,}')); // Split by double spaces or more
-    if (columns.isNotEmpty) {
-      // Add the left column answer
-      leftColumn.add(columns[0].trim());
-      // Add the right column answer if it exists
-      if (columns.length > 1) {
-        rightColumn.add(columns[1].trim());
+    final match = answerPattern.firstMatch(line.trim());
+    if (match != null) {
+      int qNum = int.tryParse(match.group(1) ?? '') ?? -1;
+      String answer = match.group(2)?.trim() ?? '';
+      if (qNum > 0 && answer.isNotEmpty) {
+        answerMap[qNum] = answer;
       }
     }
   }
 
-  // Merge left and right columns sequentially into a single list of answers
-  List<String> answers = [...leftColumn, ...rightColumn];
+  // Build ordered list of answers
+  List<String> answers = [];
+  for (int i = 1; i <= _answerKey.length; i++) {
+    answers.add(answerMap[i]?.toLowerCase() ?? 'No answer');
+  }
 
   // Ensure the answers align with the number of questions in the exam
   if (_answerKey.isEmpty ||
@@ -417,7 +475,7 @@ void _generateDynamicAnswerKey() {
     // Get the possible answers for the current question
     List<String> possibleAnswers = _answerKey[i];
     // Normalize the extracted answer (convert to lowercase)
-    String extractedAnswer = (i < answers.length) ? answers[i].toLowerCase() : 'No answer';
+    String extractedAnswer = answers[i];
 
     // Check if the extracted answer matches any of the possible answers (case-insensitive)
     bool isCorrect = isCorrectAnswer(extractedAnswer, possibleAnswers);
@@ -475,13 +533,23 @@ bool isCorrectAnswer(String extractedAnswer, List<String> possibleAnswers) {
         return;
       }
 
+      final studentId = student['Student ID'];
+      print('[SAVE] Saving results for student: ${student['First Name']} ${student['Last Name']} | ID: $studentId');
+      if (studentId == null || studentId.isEmpty) {
+        print('[ERROR] No Student ID for student: ${student['First Name']} ${student['Last Name']}');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No Student ID for ${student['First Name']} ${student['Last Name']}! Skipping save.')),
+        );
+        return;
+      }
+
       final studentRef = FirebaseFirestore.instance
           .collection('users')
           .doc(userId)
           .collection('classes')
           .doc(widget.exam.classId)
           .collection('students')
-          .doc(student['Student ID']);
+          .doc(studentId);
 
       final examRef = studentRef.collection('exams').doc(widget.exam.id);
       final sessionRef = examRef
