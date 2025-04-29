@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'dart:io';
 import 'package:image_cropper/image_cropper.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
@@ -25,7 +26,148 @@ class ExamDetailPage extends StatefulWidget {
   _ExamDetailPageState createState() => _ExamDetailPageState();
 }
 
+class BulkUploadDialog extends StatefulWidget {
+  final List<XFile> files;
+  final Future<void> Function(List<XFile>, void Function(int, int), void Function(String)) onProcess;
+  const BulkUploadDialog({required this.files, required this.onProcess, super.key});
+
+  @override
+  State<BulkUploadDialog> createState() => _BulkUploadDialogState();
+}
+
+class _BulkUploadDialogState extends State<BulkUploadDialog> {
+  int current = 0;
+  String status = '';
+  bool done = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _startUpload();
+  }
+
+  void _startUpload() async {
+    await widget.onProcess(widget.files, (i, total) {
+      setState(() {
+        current = i;
+      });
+    }, (s) {
+      setState(() {
+        status = s;
+      });
+    });
+    setState(() {
+      done = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Bulk Upload Progress'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          LinearProgressIndicator(
+            value: widget.files.isEmpty ? 0 : current / widget.files.length,
+          ),
+          SizedBox(height: 16),
+          Text('Uploading $current of ${widget.files.length} images'),
+          SizedBox(height: 8),
+          Text(status),
+        ],
+      ),
+      actions: [
+        if (done)
+          TextButton(
+            child: Text('Close', style: TextStyle(color: Color(0xFF800000))),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+      ],
+    );
+  }
+}
+
 class _ExamDetailPageState extends State<ExamDetailPage> {
+  void _showBulkUploadDialog() async {
+    List<XFile>? pickedFiles = await ImagePicker().pickMultiImage();
+    if (pickedFiles == null || pickedFiles.isEmpty) {
+      // User canceled or picked nothing
+      return;
+    }
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return BulkUploadDialog(
+          files: pickedFiles,
+          onProcess: _bulkUploadImages,
+        );
+      },
+    );
+  }
+
+  Future<void> _bulkUploadImages(List<XFile> files, void Function(int, int) onProgress, void Function(String) onStatus) async {
+    for (int i = 0; i < files.length; i++) {
+      onProgress(i + 1, files.length);
+      try {
+        final file = File(files[i].path);
+        // OCR: Get full text from image
+        String ocrText = await _performOCR(file);
+        if (ocrText.trim().isEmpty) {
+          onStatus('No text found in ${files[i].name}');
+          continue;
+        }
+        // Attempt to extract the student name (assume first non-empty line)
+        List<String> lines = ocrText.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+        String? extractedName = lines.isNotEmpty ? lines[0] : null;
+        if (extractedName == null || extractedName.length < 3) {
+          onStatus('No valid name found in ${files[i].name}');
+          continue;
+        }
+        // Try to match extracted name to a student
+        Map<String, String>? matchedStudent;
+        double highestScore = 0.0;
+        for (var student in _students) {
+          String fullName = ((student['First Name'] ?? '') + ' ' + (student['Last Name'] ?? '')).toLowerCase().trim();
+          double score = _nameSimilarity(fullName, extractedName.toLowerCase());
+          if (score > highestScore) {
+            highestScore = score;
+            matchedStudent = student;
+          }
+        }
+        // Use a threshold for similarity
+        if (matchedStudent != null && highestScore > 0.6) {
+          onStatus('Matched: $extractedName → ${matchedStudent['First Name']} ${matchedStudent['Last Name']}');
+          // Remove the name line for answer extraction
+          String answerText = lines.skip(1).join('\n');
+          await _processExtractedText(matchedStudent, answerText);
+          onStatus('Graded: ${matchedStudent['First Name']} ${matchedStudent['Last Name']}');
+        } else {
+          onStatus('No matching student for "$extractedName" in ${files[i].name}');
+        }
+      } catch (e) {
+        onStatus('Failed: ${files[i].name} ($e)');
+      }
+    }
+    onStatus('All uploads complete!');
+  }
+
+  // Returns a similarity score between 0 and 1 (1 = identical)
+  double _nameSimilarity(String a, String b) {
+    a = a.replaceAll(RegExp(r'[^a-z ]'), '').trim();
+    b = b.replaceAll(RegExp(r'[^a-z ]'), '').trim();
+    if (a == b) return 1.0;
+    if (a.isEmpty || b.isEmpty) return 0.0;
+    // Jaccard similarity on word sets (robust to OCR errors)
+    final aSet = a.split(' ').toSet();
+    final bSet = b.split(' ').toSet();
+    final intersection = aSet.intersection(bSet).length;
+    final union = aSet.union(bSet).length;
+    return union == 0 ? 0.0 : intersection / union;
+  }
+
+  File? _croppedImage; // Holds the currently cropped image, if any
   List<Map<String, String>> _students = [];
   List<String> _imagePaths = [];
   List<String?> _answers = [];
@@ -770,7 +912,7 @@ bool isCorrectAnswer(String extractedAnswer, List<String> possibleAnswers) {
         'https://pen-to-print-handwriting-ocr.p.rapidapi.com/recognize/');
     final request = http.MultipartRequest('POST', uri)
       ..headers.addAll({
-        'X-RapidAPI-Key': '7200a2db11msh81825dc49f683bdp1e9a93jsn9b5aab0bb233',
+        'X-RapidAPI-Key': 'b9f52b34c7msh0c2b4ba0175752fp13681fjsn42356a801e0a',
         'X-RapidAPI-Host': 'pen-to-print-handwriting-ocr.p.rapidapi.com',
       })
       ..files.add(await http.MultipartFile.fromPath('srcImg', imageFile.path));
@@ -908,124 +1050,106 @@ final croppedImage = autoCropEdges(image);
   }
 
   Future<void> _uploadImage(Map<String, String> student) async {
-    // Check camera permission status before accessing the gallery
-    var cameraPermissionStatus = await Permission.camera.status;
+  setState(() {
+    _croppedImage = null;
+  });
 
-    if (!cameraPermissionStatus.isGranted) {
-      // Request camera permission if not already granted
-      cameraPermissionStatus = await Permission.camera.request();
-    }
+  var cameraPermissionStatus = await Permission.camera.status;
 
-    if (cameraPermissionStatus.isGranted) {
-      // If camera permission is granted, proceed with picking an image from the gallery
-      final picker = ImagePicker();
-      final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+  if (!cameraPermissionStatus.isGranted) {
+    cameraPermissionStatus = await Permission.camera.request();
+  }
 
-      if (pickedFile != null) {
+  if (cameraPermissionStatus.isGranted) {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+
+    if (pickedFile != null) {
+      if (mounted) {
+        setState(() {
+          _isProcessing = true;
+        });
+      }
+
+      final imageFile = File(pickedFile.path);
+
+      try {
+        // Resize the image only (no more cropping)
+        final resizedFile = await _resizeImage(imageFile);
+
+        if (resizedFile != null) {
+          await _recognizeTextFromImage(student, resizedFile);
+        } else {
+          print('Failed to resize the image');
+        }
+      } catch (e) {
+        print('Error during image processing: $e');
+      } finally {
         if (mounted) {
           setState(() {
-            _isProcessing = true; // Start processing
+            _isProcessing = false;
           });
         }
-
-        final imageFile = File(pickedFile.path);
-
-        try {
-          // Resize the image
-          final resizedFile = await _resizeImage(imageFile);
-
-          if (resizedFile != null) {
-            // Crop the resized image
-            final croppedFile = await _cropImage(resizedFile);
-
-            if (croppedFile != null) {
-              // Process the cropped image
-              await _recognizeTextFromImage(student, croppedFile);
-            } else {
-              print('Image cropping canceled');
-            }
-          } else {
-            print('Failed to resize the image');
-          }
-        } catch (e) {
-          print('Error during image processing: $e');
-        } finally {
-          if (mounted) {
-            setState(() {
-              _isProcessing = false; // Stop processing
-            });
-          }
-        }
       }
-    } else {
-      // Handle the case where camera permission is not granted
-      _showPermissionDialog(
-          'Access to the camera is required to upload images from the gallery. Please enable camera permission in the app settings.');
     }
+  } else {
+    _showPermissionDialog(
+        'Access to the camera is required to upload images from the gallery. Please enable camera permission in the app settings.');
   }
+}
+
 
   Future<void> _scanImage(Map<String, String> student) async {
-    // Request camera permission
-    var permissionStatus = await Permission.camera.status;
+  setState(() {
+    _croppedImage = null;
+  });
 
-    if (!permissionStatus.isGranted) {
-      // Request permission if not already granted
-      permissionStatus = await Permission.camera.request();
-    }
+  var permissionStatus = await Permission.camera.status;
 
-    if (permissionStatus.isGranted) {
-      // Proceed with picking an image from the camera
-      final picker = ImagePicker();
-      final pickedFile = await picker.pickImage(source: ImageSource.camera);
-
-      if (pickedFile != null) {
-        if (mounted) {
-          setState(() {
-            _isProcessing = true; // Start processing
-          });
-        }
-
-        final imageFile = File(pickedFile.path);
-
-        try {
-          // Resize the image
-          final resizedFile = await _resizeImage(imageFile);
-
-          if (resizedFile != null) {
-            // Crop the resized image
-            final croppedFile = await _cropImage(resizedFile);
-
-            if (croppedFile != null) {
-              // Process the cropped image
-              await _recognizeTextFromImage(student, croppedFile);
-            } else {
-              print('Image cropping canceled');
-            }
-          } else {
-            print('Failed to resize the image');
-          }
-        } catch (e) {
-          print('Error during image processing: $e');
-        } finally {
-          if (mounted) {
-            setState(() {
-              _isProcessing = false; // Stop processing
-            });
-          }
-        }
-      }
-    } else if (permissionStatus.isPermanentlyDenied) {
-      // Handle the case where the user has denied permission permanently
-      _showPermissionDialog(
-          'Camera permission is permanently denied. Please enable it in the app settings.');
-    } else {
-      // Handle other cases such as denied temporarily
-      _showPermissionDialog(
-          'Camera access is needed to capture images. Please grant camera permission.');
-    }
+  if (!permissionStatus.isGranted) {
+    permissionStatus = await Permission.camera.request();
   }
 
-  
+  if (permissionStatus.isGranted) {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(source: ImageSource.camera);
+
+    if (pickedFile != null) {
+      if (mounted) {
+        setState(() {
+          _isProcessing = true;
+        });
+      }
+
+      final imageFile = File(pickedFile.path);
+
+      try {
+        // Resize the image only (no more cropping)
+        final resizedFile = await _resizeImage(imageFile);
+
+        if (resizedFile != null) {
+          await _recognizeTextFromImage(student, resizedFile);
+        } else {
+          print('Failed to resize the image');
+        }
+      } catch (e) {
+        print('Error during image processing: $e');
+      } finally {
+        if (mounted) {
+          setState(() {
+            _isProcessing = false;
+          });
+        }
+      }
+    }
+  } else if (permissionStatus.isPermanentlyDenied) {
+    _showPermissionDialog(
+        'Camera permission is permanently denied. Please enable it in the app settings.');
+  } else {
+    _showPermissionDialog(
+        'Camera access is needed to capture images. Please grant camera permission.');
+  }
+}
 
   void _showPermissionDialog(String message) {
     showDialog(
@@ -1345,6 +1469,8 @@ final croppedImage = autoCropEdges(image);
                     _fetchStudentScores(); // Ensure data is refreshed upon return
                   });
                 });
+              } else if (value == 'Bulk Upload') {
+                _showBulkUploadDialog();
               }
             },
             itemBuilder: (BuildContext context) {
@@ -1364,6 +1490,10 @@ final croppedImage = autoCropEdges(image);
                 PopupMenuItem<String>(
                   value: 'Download Rating Sheet',
                   child: Text('Download Rating Sheet'),
+                ),
+                PopupMenuItem<String>(
+                  value: 'Bulk Upload',
+                  child: Text('Bulk Upload'),
                 ),
               ];
             },
