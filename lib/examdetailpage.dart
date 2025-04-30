@@ -15,6 +15,8 @@ import 'package:image/image.dart' as img;
 import 'autocrop_util.dart';
 import 'DownloadRatingSheetPage.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:excel/excel.dart';
 
 class ExamDetailPage extends StatefulWidget {
   final Exam exam;
@@ -89,6 +91,8 @@ class _BulkUploadDialogState extends State<BulkUploadDialog> {
 }
 
 class _ExamDetailPageState extends State<ExamDetailPage> {
+
+  
   void _showBulkUploadDialog() async {
     List<XFile>? pickedFiles = await ImagePicker().pickMultiImage();
     if (pickedFiles == null || pickedFiles.isEmpty) {
@@ -907,6 +911,178 @@ bool isCorrectAnswer(String extractedAnswer, List<String> possibleAnswers) {
     );
   }
 
+   Future<void> _uploadAnswerKeyFromExcel() async {
+    try {
+      setState(() {
+        _isProcessing = true;
+      });
+
+      // Pick Excel file
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx', 'xls'],
+      );
+
+      if (result == null) {
+        print('User canceled file picking.');
+        return;
+      }
+
+      File file = File(result.files.single.path!);
+      final bytes = await file.readAsBytes();
+      final excel = Excel.decodeBytes(bytes);
+
+      List<String> allAnswers = [];
+
+      for (var table in excel.tables.keys) {
+        final sheet = excel.tables[table];
+        if (sheet != null) {
+          for (var row in sheet.rows) {
+            if (row.isNotEmpty && row[0] != null) {
+              final value = row[0]!.value;
+              if (value != null) {
+                allAnswers.add(value.toString().trim());
+              }
+            }
+          }
+        }
+      }
+
+      if (allAnswers.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No answers found in Column A.')),
+        );
+        return;
+      }
+
+      // ✅ Get current user
+      User? user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        print('No user logged in');
+        return;
+      }
+
+      // ✅ Reference to exam document
+      final examDocRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('classes')
+          .doc(widget.exam.classId)
+          .collection('exams')
+          .doc(widget.exam.id);
+
+      final examSnapshot = await examDocRef.get();
+      if (!examSnapshot.exists) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Exam document not found.')),
+        );
+        return;
+      }
+
+      final examData = examSnapshot.data();
+      if (examData == null || !examData.containsKey('parts')) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Invalid exam data or missing "parts".')),
+        );
+        return;
+      }
+
+      final parts = List<Map<String, dynamic>>.from(examData['parts']);
+      List<String> finalAnswers = [];
+      List<int> points = [];
+
+      int totalExpectedQuestions = 0;
+      for (var part in parts) {
+        totalExpectedQuestions += (part['numberOfQuestions'] ?? 0) as int;
+      }
+
+      // ✅ Validate total answer count
+      if (allAnswers.length != totalExpectedQuestions) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+            'Mismatch: Excel has ${allAnswers.length} answers but the exam requires $totalExpectedQuestions.',
+          )),
+        );
+        return;
+      }
+
+      // ✅ Split answers by part and gather points
+      int answerIndex = 0;
+      for (var part in parts) {
+        int count = (part['numberOfQuestions'] ?? 0) as int;
+        int partPoints = (part['points'] ?? 1) as int;
+
+        for (int i = 0; i < count; i++) {
+          finalAnswers.add(allAnswers[answerIndex]);
+          answerIndex++;
+        }
+
+        points.add(partPoints);
+      }
+
+      // ✅ Save to Firestore
+      String answerKeyDocId = 'answerKey_${widget.exam.id}';
+      await _saveAnswersToFirestore(finalAnswers, answerKeyDocId, points);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Answer key uploaded successfully!')),
+      );
+    } catch (e) {
+      print('Error: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error uploading answer key.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _saveAnswersToFirestore(
+      List<String> answers, String answerKeyDocId, List<int> points) async {
+    try {
+      User? user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        print('No user logged in');
+        return;
+      }
+
+      final answerKeyRef = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('classes')
+          .doc(widget.exam.classId)
+          .collection('exams')
+          .doc(widget.exam.id)
+          .collection('answerKey')
+          .doc(answerKeyDocId);
+
+      DocumentSnapshot docSnapshot = await answerKeyRef.get();
+
+      if (docSnapshot.exists) {
+        await answerKeyRef.update({
+          'answerKey.answers': answers,
+          'answerKey.points': points,
+        });
+        print('Answers updated successfully!');
+      } else {
+        await answerKeyRef.set({
+          'answerKey': {
+            'answers': answers,
+            'points': points,
+          }
+        });
+        print('Answer key created successfully!');
+      }
+    } catch (e) {
+      print('Error saving answers: $e');
+    }
+  }
+
   Future<void> _recognizeTextFromImage(
       Map<String, String> student, File imageFile) async {
     try {
@@ -980,7 +1156,7 @@ bool isCorrectAnswer(String extractedAnswer, List<String> possibleAnswers) {
         'https://pen-to-print-handwriting-ocr.p.rapidapi.com/recognize/');
     final request = http.MultipartRequest('POST', uri)
       ..headers.addAll({
-        'X-RapidAPI-Key': 'b9f52b34c7msh0c2b4ba0175752fp13681fjsn42356a801e0a',
+        'X-RapidAPI-Key': 'e448db27e4msh3b7f67d1079d621p1a7f60jsn90c590e28dfa',
         'X-RapidAPI-Host': 'pen-to-print-handwriting-ocr.p.rapidapi.com',
       })
       ..files.add(await http.MultipartFile.fromPath('srcImg', imageFile.path));
@@ -1537,6 +1713,8 @@ final croppedImage = autoCropEdges(image);
                     _fetchStudentScores(); // Ensure data is refreshed upon return
                   });
                 });
+                } else if (value == 'Upload Answer Key (Excel)') {
+                _uploadAnswerKeyFromExcel();
               } else if (value == 'Bulk Upload') {
                 _showBulkUploadDialog();
               }
@@ -1562,6 +1740,11 @@ final croppedImage = autoCropEdges(image);
                 PopupMenuItem<String>(
                   value: 'Bulk Upload',
                   child: Text('Bulk Upload'),
+                ),
+                const PopupMenuDivider(),
+                PopupMenuItem<String>(
+                  value: 'Upload Answer Key (Excel)',
+                  child: Text('Upload Answer Key (Excel)'),
                 ),
               ];
             },
@@ -1735,99 +1918,167 @@ final croppedImage = autoCropEdges(image);
     print('Item Analysis generated.');
   }
 
-void _editAnswerKey() async {
-  if (!mounted) return;
+ void _editAnswerKey() async {
+    List<List<TextEditingController>> controllers = [];
+    List<TextEditingController> pointsControllers = [];
+    Map<String, dynamic>? existingAnswerKey;
 
-  List<TextEditingController> controllers = [];
-
-  Map<String, dynamic>? existingAnswerKey;
-
-  User? user = FirebaseAuth.instance.currentUser;
-  if (user == null) {
-    print('No user logged in');
-    return;
-  }
-
-  String answerKeyDocId = 'answerKey_${widget.exam.id}';
-
-  final answerKeyRef = FirebaseFirestore.instance
-      .collection('users')
-      .doc(user.uid)
-      .collection('classes')
-      .doc(widget.exam.classId)
-      .collection('exams')
-      .doc(widget.exam.id)
-      .collection('answerKey')
-      .doc(answerKeyDocId);
-
-  final answerKeySnapshot = await answerKeyRef.get();
-  if (answerKeySnapshot.exists) {
-    existingAnswerKey = answerKeySnapshot.data()?['answerKey'];
-    if (existingAnswerKey is! Map<String, dynamic>) {
-      print('Unexpected answerKey format');
+    User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      print('No user logged in');
       return;
     }
-  }
 
-  _answerKey ??= List.generate(widget.exam.parts.fold(0, (sum, part) => sum + part.numberOfQuestions), (index) => []);
+    // Firestore document path
+    String answerKeyDocId = 'answerKey_${widget.exam.id}';
+    final answerKeyRef = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('classes')
+        .doc(widget.exam.classId)
+        .collection('exams')
+        .doc(widget.exam.id)
+        .collection('answerKey')
+        .doc(answerKeyDocId);
 
-  for (int questionNumber = 0; questionNumber < _answerKey.length; questionNumber++) {
-    String key = questionNumber.toString();
-    String existingAnswer = existingAnswerKey?['answers'][key]?.join(', ') ?? '';
-    controllers.add(TextEditingController(text: existingAnswer));
-  }
+    final answerKeySnapshot = await answerKeyRef.get();
 
-  if (!mounted) return;
+    if (answerKeySnapshot.exists) {
+      existingAnswerKey = answerKeySnapshot.data()?['answerKey'];
+      print('Fetched Answer Key: $existingAnswerKey');
+    }
 
-  showDialog(
-    context: context,
-    builder: (BuildContext context) {
-      return AlertDialog(
-        title: const Text('Edit Answer Key'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (int questionNumber = 1; questionNumber <= controllers.length; questionNumber++)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4.0),
-                  child: TextField(
-                    controller: controllers[questionNumber - 1],
-                    decoration: InputDecoration(
-                      labelText: 'Answer for Question $questionNumber',
+    // 🔹 FIX: Ensure extracted answers and points are lists
+    List<dynamic> storedAnswers =
+        (existingAnswerKey != null && existingAnswerKey['answers'] is List)
+            ? List.from(existingAnswerKey['answers'])
+            : [];
+
+    List<dynamic> storedPoints =
+        (existingAnswerKey != null && existingAnswerKey['points'] is List)
+            ? List.from(existingAnswerKey['points'])
+            : [];
+
+    // Initialize controllers for each part
+    int globalIndex = 0;
+    for (var partIndex = 0; partIndex < widget.exam.parts.length; partIndex++) {
+      var part = widget.exam.parts[partIndex];
+      List<TextEditingController> partControllers = [];
+
+      for (var i = 0; i < part.numberOfQuestions; i++) {
+        // ✅ FIX: Ensure storedAnswers is properly checked
+        String existingAnswer = (globalIndex < storedAnswers.length)
+            ? storedAnswers[globalIndex] as String
+            : '';
+
+        partControllers.add(TextEditingController(text: existingAnswer));
+
+        if (_answerKey.length <= globalIndex) _answerKey.add([existingAnswer]);
+        globalIndex++;
+      }
+      controllers.add(partControllers);
+
+      // ✅ FIX: Ensure storedPoints is properly checked
+      int existingPoints = (partIndex < storedPoints.length)
+          ? (storedPoints[partIndex] as int)
+          : 1;
+
+      pointsControllers
+          .add(TextEditingController(text: existingPoints.toString()));
+
+      if (_pointsPerQuestion.length <= partIndex)
+        _pointsPerQuestion.add(existingPoints);
+    }
+
+    // Show dialog for editing
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        int questionNumber = 1;
+        return AlertDialog(
+          title: const Text('Edit Answer Key'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ...List.generate(widget.exam.parts.length, (partIndex) {
+                  var part = widget.exam.parts[partIndex];
+                  var partControllers = controllers[partIndex];
+
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Part ${partIndex + 1}: ${part.questionType}',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        TextField(
+                          controller: pointsControllers[partIndex],
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: 'Points for Each Question',
+                          ),
+                          onChanged: (value) {
+                            int points = int.tryParse(value) ?? part.points;
+                            for (int i = 0; i < part.numberOfQuestions; i++) {
+                              int index =
+                                  partIndex * part.numberOfQuestions + i;
+                              if (_pointsPerQuestion.length > index) {
+                                _pointsPerQuestion[index] = points;
+                              }
+                            }
+                          },
+                        ),
+                        ...List.generate(part.numberOfQuestions,
+                            (questionIndex) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4.0),
+                            child: TextField(
+                              controller: partControllers[questionIndex],
+                              decoration: InputDecoration(
+                                labelText:
+                                    'Answer for Question ${questionNumber++}',
+                              ),
+                              onChanged: (value) {
+                                int index = partIndex * part.numberOfQuestions +
+                                    questionIndex;
+                                if (_answerKey.length > index) {
+                                  _answerKey[index] = value.split(',').map((e) => e.trim()).toList();
+                                }
+                              },
+                            ),
+                          );
+                        }),
+                      ],
                     ),
-                    onChanged: (value) {
-                      _answerKey[questionNumber - 1] = value.split(',').map((e) => e.trim()).toList();
-                    },
-                  ),
-                ),
-            ],
+                  );
+                }),
+              ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(
-            child: const Text('Save'),
-            onPressed: () async {
-              await _saveAnswerKeyToFirestore(existingAnswerKey != null, answerKeyDocId);
-              if (mounted) {
+          actions: [
+            TextButton(
+              child: const Text('Save'),
+              onPressed: () async {
+                await _saveAnswerKeyToFirestore(
+                    existingAnswerKey != null, answerKeyDocId);
                 setState(() {});
                 Navigator.of(context).pop();
-              }
-            },
-          ),
-          TextButton(
-            child: const Text('Cancel'),
-            onPressed: () {
-              if (mounted) {
+              },
+            ),
+            TextButton(
+              child: const Text('Cancel'),
+              onPressed: () {
                 Navigator.of(context).pop();
-              }
-            },
-          ),
-        ],
-      );
-    },
-  );
-}
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
 
 
 Future<void> _saveAnswerKeyToFirestore(bool isUpdate, String answerKeyDocId) async {

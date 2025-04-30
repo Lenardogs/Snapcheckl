@@ -40,6 +40,7 @@ dependencies:
   permission_handler: ^11.1.0  # Updated to latest
   connectivity_plus: ^5.0.2
   
+  
 
 dev_dependencies:
   flutter_test:

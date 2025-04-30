@@ -65,12 +65,12 @@ class _AnswerSheetPageState extends State<AnswerSheetPage> {
               pw.Row(
                 mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                 children: [
-                  pw.Text('Name: ________________________________',
-                      style: pw.TextStyle(fontSize: 7)),
+                  pw.Text('Name: ',
+                      style: pw.TextStyle(fontSize: 15)),
                  
                 ],
               ),
-              pw.SizedBox(height: 6), // Increased spacing
+              pw.SizedBox(height: 35), // Increased spacing
 
               pw.Divider(
                 thickness: 1, // Adjust thickness as needed
